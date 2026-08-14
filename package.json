@@ -38,6 +38,7 @@
     "dev:proxy": "bun run src/cli/index.ts start",
     "dev:gui": "cd gui && bun run dev",
     "start": "bun run src/cli/index.ts start",
+    "start:v2-plaintext": "bun scripts/start-v2-plaintext-agent-messages.ts",
     "test": "bun scripts/test.ts",
     "typecheck": "bun x tsc --noEmit",
     "audit:high": "bun audit --audit-level=high && cd gui && bun audit --audit-level=high",
