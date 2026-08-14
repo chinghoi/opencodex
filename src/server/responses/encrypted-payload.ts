@@ -260,9 +260,83 @@ export function hasEncryptedContentPart(content: unknown): boolean {
   ));
 }
 
+/**
+ * Experimental opt-in counterpart to CPA's `codex.optimize-multi-agent-v2` encryption fix.
+ * Codex marks collaboration message arguments with the non-JSON-Schema `encrypted: true`
+ * annotation. The native backend then encrypts those arguments, which makes cross-provider
+ * V2 child turns unreadable. Removing only that annotation keeps the collaboration wire
+ * shape intact while asking the backend to return ordinary plaintext arguments.
+ *
+ * This is intentionally environment-gated and default-off so existing OpenCodex behavior
+ * (including agentTaskRecovery) remains unchanged unless the operator explicitly opts in.
+ */
+export const V2_PLAINTEXT_AGENT_MESSAGES_ENV = "OPENCODEX_V2_PLAINTEXT_AGENT_MESSAGES";
+const V2_COLLABORATION_MESSAGE_TOOLS = new Set(["spawn_agent", "send_message", "followup_task"]);
+
+export function v2PlaintextAgentMessagesEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = env[V2_PLAINTEXT_AGENT_MESSAGES_ENV];
+  if (typeof raw !== "string") return false;
+  return ["1", "true", "yes", "on"].includes(raw.trim().toLowerCase());
+}
+
+/**
+ * Remove only `parameters.properties.message.encrypted` from the three V2 collaboration
+ * messaging functions, and only while walking the `collaboration` namespace. Other tools
+ * and unrelated `encrypted` properties are preserved byte-for-byte at the object level.
+ *
+ * `root` is normally the Responses `input` array, which contains `additional_tools`.
+ */
+export function stripV2CollaborationMessageEncryptionInPlace(root: unknown): number {
+  let stripped = 0;
+
+  const visit = (node: unknown, inCollaborationNamespace: boolean): void => {
+    if (Array.isArray(node)) {
+      for (const child of node) visit(child, inCollaborationNamespace);
+      return;
+    }
+    if (!node || typeof node !== "object") return;
+
+    const record = node as Record<string, unknown>;
+    const entersCollaboration = record.type === "namespace" && record.name === "collaboration";
+    const scoped = inCollaborationNamespace || entersCollaboration;
+
+    if (
+      scoped
+      && record.type === "function"
+      && typeof record.name === "string"
+      && V2_COLLABORATION_MESSAGE_TOOLS.has(record.name)
+    ) {
+      const parameters = record.parameters;
+      if (parameters && typeof parameters === "object" && !Array.isArray(parameters)) {
+        const properties = (parameters as Record<string, unknown>).properties;
+        if (properties && typeof properties === "object" && !Array.isArray(properties)) {
+          const message = (properties as Record<string, unknown>).message;
+          if (message && typeof message === "object" && !Array.isArray(message)) {
+            const messageSchema = message as Record<string, unknown>;
+            if (Object.hasOwn(messageSchema, "encrypted")) {
+              delete messageSchema.encrypted;
+              stripped += 1;
+            }
+          }
+        }
+      }
+    }
+
+    for (const [key, value] of Object.entries(record)) {
+      visit(value, key === "tools" ? scoped : inCollaborationNamespace);
+    }
+  };
+
+  visit(root, false);
+  return stripped;
+}
+
 
 
 export function sanitizeEncryptedContentInPlace(input: unknown): number {
+  if (v2PlaintextAgentMessagesEnabled()) {
+    stripV2CollaborationMessageEncryptionInPlace(input);
+  }
   if (!Array.isArray(input)) return 0;
   let rewritten = 0;
   const visit = (node: unknown): number => {
