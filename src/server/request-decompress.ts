@@ -1,5 +1,6 @@
 import { gunzipSync, inflateRawSync, inflateSync, zstdDecompressSync } from "node:zlib";
 import type { TranslatorBudget } from "../lib/translator-budget";
+import { applyV2PlaintextAgentMessagesInPlace } from "../lib/v2-plaintext-agent-messages";
 
 /**
  * Request-body decompression for the /v1/responses data plane.
@@ -233,7 +234,14 @@ export async function readBoundedJsonRequestBody(
   }
 }
 
-/** Parse a JSON data-plane body using the shared 256 MiB admission cap. */
-export function readJsonRequestBody(req: Request, budget?: TranslatorBudget): Promise<unknown> {
-  return readBoundedJsonRequestBody(req, MAX_DECOMPRESSED_BODY_BYTES, budget);
+/**
+ * Parse a JSON Responses data-plane body using the shared 256 MiB admission cap.
+ * The V2 plaintext compatibility rewrite runs here because this is the first point
+ * that sees the complete decoded payload, including both top-level `tools` and
+ * Responses Lite `input[].additional_tools` declarations.
+ */
+export async function readJsonRequestBody(req: Request, budget?: TranslatorBudget): Promise<unknown> {
+  const parsed = await readBoundedJsonRequestBody(req, MAX_DECOMPRESSED_BODY_BYTES, budget);
+  applyV2PlaintextAgentMessagesInPlace(parsed);
+  return parsed;
 }
